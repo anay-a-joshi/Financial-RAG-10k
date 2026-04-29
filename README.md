@@ -1,0 +1,178 @@
+# Financial Statement Q&A — Local RAG over SEC 10-K Filings
+
+![Profile Views](https://komarev.com/ghpvc/?username=anay-a-joshi&color=06B6D4)
+![Python](https://img.shields.io/badge/python-3.12-blue)
+![LlamaIndex](https://img.shields.io/badge/LlamaIndex-0.14-orange)
+![ChromaDB](https://img.shields.io/badge/ChromaDB-1.5-purple)
+![Ollama](https://img.shields.io/badge/Ollama-llama3.2:3b-black)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Local-First](https://img.shields.io/badge/runs-100%25%20locally-success)
+
+A fully local Retrieval-Augmented Generation (RAG) system that answers natural-language questions about company **10-K filings**, built end-to-end over **100 SEC EDGAR filings** (10 S&P 500 tickers × 10 fiscal years).
+
+**No external APIs. No cloud. No paid models. Everything runs on a laptop.**
+
+---
+
+## Highlights
+
+- **100 filings → 12,011 indexed chunks** across AFL, CAT, IBM, KMB, KR, MS, NVDA, PNC, PSA, TECH (fiscal years 2009–2019)
+- **Robust 10-K extraction** with a 5-stage fallback strategy that handles SEC SGML containers, base64-encoded PDFs, inline XBRL, and malformed HTML
+- **Metadata-filtered retrieval** on `(ticker, year)` so each question is scoped to a single filing
+- **Local LLM** (`llama3.2:3b` via Ollama) with a 6-rule prompt template that prevents hallucination and handles refusals deterministically
+- **Streamlit UI** with a chunks-expander audit trail so users can inspect the evidence behind every answer
+- **20-question manual evaluation** across two different fiscal years: **17 strong, 3 mixed, 0 errors, 0 hallucinations**
+
+---
+
+## Architecture
+
+```
+   SEC EDGAR  →  data_downloading.py  →  data_processing.py  →  vector_store_construction.py
+                                                                            ↓
+                                                              ChromaDB (12,011 chunks)
+                                                                            ↓
+User question  →  metadata filter (ticker, year)  →  top-8 retrieval  →  llama3.2:3b  →  answer
+                                                                            ↑
+                                                                  Streamlit UI (app.py)
+```
+
+---
+
+## Tech Stack
+
+| Component | Choice | Why |
+|---|---|---|
+| Embeddings | `BAAI/bge-small-en-v1.5` (384-dim) | Strong on MTEB; ~130 MB; runs on CPU/MPS |
+| Vector store | ChromaDB (persistent) | Local, supports metadata filtering natively |
+| Chunking | LlamaIndex `SentenceSplitter` | 1024-token chunks, 100-token overlap, paragraph- and sentence-aware |
+| LLM | `llama3.2:3b` via Ollama | Lightweight, deterministic at temperature=0 |
+| UI | Streamlit | Cached resource loading, audit-trail expander |
+| Filing source | SEC EDGAR via `sec-edgar-downloader` | Programmatic, fair-use compliant |
+
+---
+
+## Local Setup
+
+This project is intended to run **locally** on your own machine. CPU-only is fine; an Apple Silicon GPU/MPS or CUDA GPU helps but is not required.
+
+### 1. Clone and create a virtual environment
+
+```bash
+git clone https://github.com/anay-a-joshi/Financial-RAG-10k.git
+cd Financial-RAG-10k
+
+python -m venv .venv
+source .venv/bin/activate          # macOS / Linux
+# .venv\Scripts\activate           # Windows PowerShell
+
+pip install -U pip
+pip install -r requirements.txt
+```
+
+### 2. Install Ollama and pull a local model
+
+Install Ollama from [ollama.com](https://ollama.com), then pull the recommended lightweight model:
+
+```bash
+ollama pull llama3.2:3b
+```
+
+Make sure the Ollama service is running (the macOS app starts it automatically; on Linux run `ollama serve` in a separate terminal).
+
+> Alternative models that work fine: `qwen2.5:3b`, `phi4-mini:3.8b`. Edit `LLM_MODEL_NAME` in `config.py` to switch. The system also supports `HuggingFaceLLM` as an alternative backend (set `LLM_BACKEND="huggingface"` in `config.py`).
+
+### 3. Run the full pipeline
+
+```bash
+bash run.sh
+```
+
+This runs, in order:
+
+1. `data_downloading.py` — fetches all 10-K filings from SEC EDGAR into `data/original/`
+2. `data_processing.py` — cleans each filing into `data/processed/{ticker}_{year}/content.txt`
+3. `vector_store_construction.py` — chunks, embeds, and indexes everything into ChromaDB at `data/vector_store/`
+4. `system.py` — runs the 20-question manual evaluation and writes `evaluation_results.md`
+
+> Total runtime on a MacBook M3 Pro: roughly **10–15 minutes** for the data pipeline and **~25 minutes** for the evaluation.
+
+### 4. Launch the Streamlit app
+
+```bash
+streamlit run app.py
+```
+
+Pick a company and fiscal year from the dropdowns, ask a question, and inspect the retrieved evidence chunks via the expander below the answer.
+
+---
+
+## Repository Layout
+
+```
+.
+├── sample_tickers.py              # Deterministic ticker sampling from student-ID seed
+├── data_downloading.py            # SEC EDGAR retrieval (sec-edgar-downloader)
+├── data_processing.py             # Multi-strategy 10-K extraction + cleaning
+├── vector_store_construction.py   # Chunking + embedding + ChromaDB indexing
+├── system.py                      # RAGSystem class + 20-question evaluation harness
+├── app.py                         # Streamlit interface
+├── config.py                      # Model + path configuration
+├── run.sh                         # Convenience script: runs the full pipeline
+├── requirements.txt               # Python dependencies (pinned)
+├── sampled_tickers.txt            # Output of sample_tickers.py (final 10 tickers)
+└── README.md                      # This file
+```
+
+---
+
+## Evaluation Results
+
+A 20-question manual evaluation (2 questions per ticker, asked across two different fiscal years to demonstrate metadata filtering) produced:
+
+| Metric | Result |
+|---|---|
+| Strong answers | **17 / 20** |
+| Mixed answers (partially complete) | 3 / 20 |
+| Wrong answers | **0 / 20** |
+| Errors / timeouts | **0 / 20** |
+| Hallucinations | **0** |
+| Over-refusals | **0** |
+| Total runtime | ~25 minutes |
+
+The full annotated results — question, top retrieved chunk, generated answer — are written to `evaluation_results.md` by `system.py`.
+
+---
+
+## Implementation Notes
+
+**Robust 10-K extraction.** Each SEC submission is a single SGML container with multiple `<DOCUMENT>` blocks. Some filings (e.g., CAT 2013–2017) embed base64-encoded PDFs before the actual HTML body, which crashes naive parsers. The cleaner uses a 5-stage fallback strategy: prefer `.htm`/`.html`-named 10-K blocks above 50 KB → fall back to any 10-K block → fall back to amendments → fall back to the largest HTML attachment → last resort, return whatever exists. Before parsing, every body is scanned for base64-PDF or `<PDF>` markers and trimmed to the first real HTML tag. BeautifulSoup runs with `lxml` first and retries with `html.parser` if `lxml` produces suspiciously small output.
+
+**Metadata-aware chunking.** Every chunk carries four metadata fields: `ticker`, `year`, `filing_id`, `chunk_index`. The first three are excluded from the embedding text (so embeddings represent natural language alone) but used as `ExactMatchFilter` clauses at query time. `chunk_index` is also hidden from the LLM prompt since it carries no semantic value.
+
+**Anti-hallucination prompt.** A 6-rule prompt template forces the LLM to use only the provided context, decline with a fixed sentence on off-topic questions, and never pull a number from context just because it looks numeric. Combined with `temperature=0`, this yields deterministic, grounded answers across re-runs.
+
+**Optional reranking.** A `BAAI/bge-reranker-base` cross-encoder reranker is implemented and disabled by default. Enable it with `RAGSystem(use_reranker=True)`.
+
+---
+
+## Author
+
+**Anay Abhijit Joshi**
+GitHub: [@anay-a-joshi](https://github.com/anay-a-joshi)
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
+
+---
+
+## Acknowledgments
+
+- [SEC EDGAR](https://www.sec.gov/edgar) for the open filing dataset
+- [LlamaIndex](https://www.llamaindex.ai/) for the RAG framework
+- [Chroma](https://www.trychroma.com/) for the local vector database
+- [Ollama](https://ollama.com/) for frictionless local LLM serving
+- [BAAI](https://huggingface.co/BAAI) for the open-source `bge` embedding and reranker models
